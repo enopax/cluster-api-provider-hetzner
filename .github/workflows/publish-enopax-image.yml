@@ -1,0 +1,96 @@
+name: Publish Enopax CAPH Image
+# yamllint disable rule:line-length
+#
+# Enopax fork-specific image publish workflow.
+#
+# Background
+# ----------
+# This fork carries a small "diagnostics-flags" patch on top of upstream CAPH
+# (see issue #2). The resulting manager image has, until now, been built and
+# pushed by hand (most recently `ghcr.io/enopax/caph:v1.0.7-diagnostics`); there
+# was no CI pipeline wired up for the fork.
+#
+# This workflow wires that manual process into CI and, as part of adopting the
+# org-wide package naming schema (enopax/enopax PR #15), publishes the image to
+# BOTH paths during the transition:
+#   - ghcr.io/enopax/caph         (legacy path, kept working during cutover)
+#   - ghcr.io/enopax/images/caph  (new namespaced path)
+#
+# It is intentionally trigger-on-demand only (workflow_dispatch) and mirrors the
+# Makefile `docker-build` / `docker-push` targets. This fork is a known retire
+# candidate (issue #2), so the workflow is deliberately kept small rather than
+# replicating upstream's full multi-arch / cosign / SBOM release pipeline.
+#
+# NOTE: upstream's existing `build.yml` / `release.yml` push to ghcr.io/syself
+# and are unrelated to the enopax image; they are left untouched.
+on: # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish (e.g. v1.0.7-diagnostics)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Both target repositories. The legacy path is retained until the cutover to
+  # the images/ namespace is complete across all consumers.
+  LEGACY_IMAGE: ghcr.io/enopax/caph
+  NAMESPACED_IMAGE: ghcr.io/enopax/images/caph
+
+jobs:
+  publish:
+    name: Build and push enopax CAPH image (both paths)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The manager Dockerfile (images/caph/Dockerfile) compiles the binary
+      # inside a "builder" image (images/builder/Dockerfile, a Go toolchain).
+      # Build that builder image locally first and pass it through as the
+      # `builder_image` build-arg, exactly as the Makefile `docker-build`
+      # target does (it references `$(INFRA_SHORT)-builder:$(TAG)`).
+      - name: Build builder image (local)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./images/builder/Dockerfile
+          push: false
+          load: true
+          tags: caph-builder:${{ inputs.tag }}
+
+      # Build once and push to both repositories. This mirrors the Makefile
+      # `docker-build` target (same Dockerfile and build args) but tags the
+      # manager image for both the legacy and the new namespaced path.
+      - name: Build and push manager image to both paths
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./images/caph/Dockerfile
+          push: true
+          tags: |
+            ${{ env.LEGACY_IMAGE }}:${{ inputs.tag }}
+            ${{ env.NAMESPACED_IMAGE }}:${{ inputs.tag }}
+          build-args: |
+            ARCH=amd64
+            builder_image=caph-builder:${{ inputs.tag }}
+
+      - name: Summary
+        run: |
+          echo "Published:" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ${LEGACY_IMAGE}:${{ inputs.tag }} (legacy, kept during transition)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ${NAMESPACED_IMAGE}:${{ inputs.tag }} (new images/ namespace)" >> "$GITHUB_STEP_SUMMARY"
