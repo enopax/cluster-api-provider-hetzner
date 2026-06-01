@@ -39,14 +39,16 @@ permissions:
   packages: write
 
 env:
-  # Both target repositories. The legacy path is retained until the cutover to
-  # the images/ namespace is complete across all consumers.
-  LEGACY_IMAGE: ghcr.io/enopax/caph
+  # New org-wide namespaced path (enopax/enopax #15). The legacy path
+  # ghcr.io/enopax/caph is intentionally NOT pushed: that package was created
+  # manually and the repo GITHUB_TOKEN is not authorised to write to it
+  # (push fails with "permission_denied: write_package"), and the legacy path
+  # is optional per the cutover plan. Consumers should use the namespaced path.
   NAMESPACED_IMAGE: ghcr.io/enopax/images/caph
 
 jobs:
   publish:
-    name: Build and push enopax CAPH image (both paths)
+    name: Build and push enopax CAPH image
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -63,20 +65,19 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # The v1.1.6 manager Dockerfile is self-contained (golang builder stage),
-      # so we build it directly. Build once and push to both repositories.
-      - name: Build and push manager image to both paths
+      # so we build it directly and push to the new namespaced path.
+      - name: Build and push manager image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./images/caph/Dockerfile
           platforms: linux/amd64
+          provenance: false
           push: true
           tags: |
-            ${{ env.LEGACY_IMAGE }}:${{ inputs.tag }}
             ${{ env.NAMESPACED_IMAGE }}:${{ inputs.tag }}
 
       - name: Summary
         run: |
           echo "Published:" >> "$GITHUB_STEP_SUMMARY"
-          echo "- ${LEGACY_IMAGE}:${{ inputs.tag }} (legacy, kept during transition)" >> "$GITHUB_STEP_SUMMARY"
           echo "- ${NAMESPACED_IMAGE}:${{ inputs.tag }} (new images/ namespace)" >> "$GITHUB_STEP_SUMMARY"
